@@ -8,11 +8,17 @@ library(janitor)
 library(stringi)
 library(stringr)
 library(writexl)
-raw_xlsx <- here::here("ev3", "ventas.xlsx")
+
+# importación del archivo ventas.xlsx
+raw_xlsx <- here::here("ev3", "otros", "ventas.xlsx")
 ventas_df <- readxl::read_excel(
   path = raw_xlsx,
   sheet = "Ventas"
 )
+
+# inspección de datos
+# head(ventas_df)
+# View(ventas_df)
 
 productos_replace <- c(
   "\\bcamara\\b"      = "Cámara",
@@ -43,6 +49,18 @@ shipping_replace <- c(
   "\\beconomico\\b" = "Económico"
 )
 
+# fechas normalizar y ordenar antiguo -> nuevo
+ventas_df <- ventas_df %>%
+  mutate(
+         date = coalesce(
+           suppressWarnings(dmy(date)),
+           suppressWarnings(ymd(date)),
+           suppressWarnings(mdy(date))
+         )) %>%
+  filter(!is.na(date)) %>%
+  complete(date = seq(min(date), max(date), by = "day")) %>%
+  mutate(date = format(date, "%Y/%m/%d")) %>%
+  arrange(date)
 ventas_df <- ventas_df %>%
   mutate(
     product_name = product_name %>%
@@ -59,7 +77,6 @@ ventas_df <- ventas_df %>%
       str_replace_all(regex("\\bLed\\b", ignore_case = TRUE), "LED") %>%
       str_replace_all(regex("\\bUsb\\b", ignore_case = TRUE), "USB")
   )
-
 ventas_df <- ventas_df %>%
   mutate(
     category = category %>%
@@ -112,31 +129,43 @@ ventas_df <- ventas_df %>%
   )
 ventas_df <- ventas_df %>%
   mutate(
-    price = {
-      pid <- price %>%
+    quantity = {
+      qua <- quantity %>%
         trimws()
-      pid <- str_replace(pid, regex("^\\$ "), "")
-      pid <- str_replace(pid, regex("^\\s+"), "0") # falta probar
-      pid <- str_replace(pid, regex("\\.", ignore_case = FALSE), "")
-      pid <- type.convert(pid, as.is, dec = ",")
-      pid <- round(pid)
-      pid
+      qua[is.na(qua)] <- "0"
+      qua <- type.convert(qua, as.is = TRUE, dec = ".")
+      qua <- round(qua)
+      qua
     }
   )
-
-# fechas normalizar y ordenar antiguo -> nuevo
 ventas_df <- ventas_df %>%
   mutate(
-         date = coalesce(
-           suppressWarnings(dmy(date)),
-           suppressWarnings(ymd(date)),
-           suppressWarnings(mdy(date))
-         )) %>%
-  filter(!is.na(date)) %>%
-  complete(date = seq(min(date), max(date), by = "day")) %>%
-  mutate(date = format(date, "%Y/%m/%d")) %>%
-  arrange(date)
-
+    price = {
+      pri <- price %>%
+        trimws()
+      pri <- str_replace(pri, regex("^\\$ "), "")
+      pri <- str_replace(pri, regex("\\.", ignore_case = FALSE), "")
+      pri[is.na(pri)] <- "0"
+      pri <- type.convert(pri, as.is = TRUE, dec = ",")
+      pri <- round(pri)
+      pri
+    }
+  )
+ventas_df <- ventas_df %>%
+  mutate(
+    discount = {
+      dis <- discount %>%
+        trimws()
+      dis <- str_replace(dis, regex("%"), "")
+      dis <- str_replace(dis, regex("\\.", ignore_case = FALSE), "")
+      dis[is.na(dis)] <- "0"
+      dis <- type.convert(dis, as.is = TRUE, dec = ".")
+      mult <- !str_detect(as.character(discount), "^[^0\\.[1-9]$]|^[^[1-9]$]") # lo q mas entiendo aca es el regex
+      mult[is.na(mult)] <- FALSE
+      dis[mult] <- dis[mult] / 100
+      dis
+    }
+  )
 ventas_df %>% # elimina duplicados
   distinct(order_id, product_id, .keep_all = FALSE)
 
@@ -146,8 +175,11 @@ ventas_df <- ventas_df[rowSums(is.na(ventas_df)) != ncol(ventas_df), ]
 ventas_subset <- ventas_df[, c("order_id", "product_id")]
 ventas_by_column <- ventas_df[complete.cases(ventas_subset), ]
 ventas_df <- ventas_by_column
+ventas_empty_int <- ventas_df[-(which(ventas_df$price %in% "0")), ]
+ventas_empty_int <- ventas_df[-(which(ventas_df$quantity %in% "0")), ]
+ventas_df <- ventas_empty_int
 
 # change the column classes whenever it is appropriate (int, char, etc)
 ventas_df <- type.convert(ventas_df, as.is = TRUE)
 
-write_xlsx(ventas_df, path = "ventas_clean.xlsx")
+write.csv(ventas_df, file = "ventas_limpias.csv", dec = ",")
