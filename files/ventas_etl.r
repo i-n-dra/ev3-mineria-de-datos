@@ -17,8 +17,8 @@ ventas_df <- readxl::read_excel(
 )
 
 # inspección de datos
-# head(ventas_df)
-# View(ventas_df)
+head(ventas_df)
+View(ventas_df)
 
 productos_replace <- c(
   "\\bcamara\\b"      = "Cámara",
@@ -49,7 +49,7 @@ shipping_replace <- c(
   "\\beconomico\\b" = "Económico"
 )
 
-# fechas normalizar y ordenar antiguo -> nuevo
+# fechas normalización, cambio de class y orden de antiguo a nuevo
 ventas_df <- ventas_df %>%
   mutate(
          date = coalesce(
@@ -60,6 +60,10 @@ ventas_df <- ventas_df %>%
   filter(!is.na(date)) %>%
   complete(date = seq(min(date), max(date), by = "day")) %>%
   mutate(date = format(date, "%Y/%m/%d")) %>%
+  mutate(
+    date = date %>%
+      as.Date(, format = "%Y/%m/%d")
+  ) %>%
   arrange(date)
 ventas_df <- ventas_df %>%
   mutate(
@@ -88,6 +92,22 @@ ventas_df <- ventas_df %>%
       str_replace("^D.*", "Deporte") %>%
       str_replace("^Ele.*", "Electrónica")
   )
+# elimina filas que no estén asociados a ningún producto
+ventas_df <- ventas_df %>%
+  filter(!(is.na(product_name) & is.na(category))) %>%
+  mutate(
+    product_name = if_else(
+      is.na(product_name) & !is.na(category),
+      replace_na("Otro"),
+      product_name
+    ),
+    category = if_else(
+      is.na(category) & !is.na(product_name),
+      replace_na("Otro"),
+      category
+    )
+  )
+
 ventas_df <- ventas_df %>%
   mutate(
     payment_method = payment_method %>%
@@ -99,7 +119,8 @@ ventas_df <- ventas_df %>%
         lapply(names(payment_replace),
                function(p) regex(p, ignore_case = TRUE))
       )) %>%
-      str_to_title(locale = "es")
+      str_to_title(locale = "es") %>%
+      replace_na("Otro")
   )
 ventas_df <- ventas_df %>%
   mutate(
@@ -113,8 +134,10 @@ ventas_df <- ventas_df %>%
         lapply(names(shipping_replace),
                function(p) regex(p, ignore_case = TRUE))
       )) %>%
-      str_to_title(locale = "es")
+      str_to_title(locale = "es") %>%
+      replace_na("Otro")
   )
+
 ventas_df <- ventas_df %>%
   mutate(
     product_id = {
@@ -135,6 +158,7 @@ ventas_df <- ventas_df %>%
       qua[is.na(qua)] <- "0"
       qua <- type.convert(qua, as.is = TRUE, dec = ".")
       qua <- round(qua)
+      qua <- as.integer(qua)
       qua
     }
   )
@@ -148,6 +172,7 @@ ventas_df <- ventas_df %>%
       pri[is.na(pri)] <- "0"
       pri <- type.convert(pri, as.is = TRUE, dec = ",")
       pri <- round(pri)
+      pri <- as.integer(pri)
       pri
     }
   )
@@ -156,18 +181,19 @@ ventas_df <- ventas_df %>%
     discount = {
       dis <- discount %>%
         trimws()
-      dis <- str_replace(dis, regex("%"), "")
-      dis <- str_replace(dis, regex("\\.", ignore_case = FALSE), "")
+      dis <- str_replace_all(dis, "%", "")
       dis[is.na(dis)] <- "0"
       dis <- type.convert(dis, as.is = TRUE, dec = ".")
-      mult <- !str_detect(as.character(discount), "^[^0\\.[1-9]$]|^[^[1-9]$]") # lo q mas entiendo aca es el regex
-      mult[is.na(mult)] <- FALSE
-      dis[mult] <- dis[mult] / 100
+      decimal <- str_detect(as.character(discount), "\\.")
+      dis[!decimal & dis > 1] <- dis[!decimal & dis > 1] / 100
+      dis[dis > 1] <- dis[dis > 1] / 100
       dis
     }
   )
-ventas_df %>% # elimina duplicados
-  distinct(order_id, product_id, .keep_all = FALSE)
+# elimina duplicados
+ventas_df <- ventas_df %>%
+  distinct(order_id, customer_id, .keep_all = TRUE) %>%
+  distinct(order_id, product_id, .keep_all = TRUE)
 
 # NA normalización, limpiar campos en blanco
 ventas_df <- ventas_df[rowSums(is.na(ventas_df)) != ncol(ventas_df), ]
@@ -175,11 +201,41 @@ ventas_df <- ventas_df[rowSums(is.na(ventas_df)) != ncol(ventas_df), ]
 ventas_subset <- ventas_df[, c("order_id", "product_id")]
 ventas_by_column <- ventas_df[complete.cases(ventas_subset), ]
 ventas_df <- ventas_by_column
-ventas_empty_int <- ventas_df[-(which(ventas_df$price %in% "0")), ]
-ventas_empty_int <- ventas_df[-(which(ventas_df$quantity %in% "0")), ]
-ventas_df <- ventas_empty_int
 
-# change the column classes whenever it is appropriate (int, char, etc)
-ventas_df <- type.convert(ventas_df, as.is = TRUE)
+# aproximación en columnas "quantity" y "price"
+ventas_df <- ventas_df %>%
+  filter(!(quantity == 0 & price == 0)) %>%
+  mutate(
+    quantity = if_else(
+      quantity == 0 & price > 0,
+      round(mean(quantity[price > 0 & quantity > 0], na.rm = TRUE) *
+              (median(price[quantity > 0], na.rm = TRUE) / price)),
+      quantity
+    ),
+    quantity = if_else(is.na(quantity) | is.infinite(quantity) | quantity < 0,
+                       0, quantity),
+    quantity = as.integer(quantity),
 
-write.csv(ventas_df, file = "ventas_limpias.csv", dec = ",")
+    price = if_else(
+      price == 0 & quantity > 0,
+      round(mean(price[quantity > 0 & price > 0], na.rm = TRUE) *
+              (median(quantity[price > 0], na.rm = TRUE) / quantity)),
+      price
+    ),
+    price = if_else(is.na(price) | is.infinite(price) | price < 0,
+                    0, price),
+    price = as.integer(price),
+  )
+
+path <- here::here("ev3", "ventas_limpias.csv")
+write.csv(
+  ventas_df,
+  file = path,
+  row.names = FALSE,
+  fileEncoding = "Latin1"
+)
+path <- here::here("ev3", "ventas_limpias.xlsx")
+writexl::write_xlsx(
+  ventas_df,
+  path = path,
+)
